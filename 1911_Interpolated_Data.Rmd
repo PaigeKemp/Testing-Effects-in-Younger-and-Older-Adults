@@ -1,0 +1,143 @@
+---
+title: "1911_Inter_Data"
+author: "Paige Kemp & Chris Wahlheim"
+Date: "12/14/2020"
+output: html_document
+---
+
+
+# Clear Environment and load packages
+```{r clear environment and load packages}
+## clear Environment
+rm(list=ls())
+
+## load packages
+library(tidyverse)
+library(magrittr)
+library(lme4)
+library(car)
+library(emmeans)
+library(knitr)
+library(Hmisc)
+```
+
+
+# Read in Interpolated Data
+```{r read in interpolated data}
+## read data
+Inter_Data <- read.csv("1911_Interpolated_data.csv", stringsAsFactors = FALSE, fileEncoding = "UTF-8-BOM")
+
+## exclude subjects
+Inter_Data <- Inter_Data %>% filter(!Subject %in% c("111", "112"))
+```
+
+
+# Checking sample size
+```{r checking sample size}
+## compute sample size for interpolated test data
+Inter_Sample_Size <- Inter_Data %>%
+  group_by(AgeGroup) %>%
+  mutate(N = n_distinct(Subject)) %>%
+  summarise(N = mean(N))
+Inter_Sample_Size
+```
+
+
+# Create Binary Variables for interpolated accuracy and creating a data frame
+```{r create binary variables for interpolated accuracy and creating a data frame}
+## create binary variable for interpolated test accuracy
+## target should match L1 response
+Inter_Data$L1_Inter_Test_Acc <- ifelse(Inter_Data$Target == Inter_Data$L1TestItem.RESP, 1, 0)
+
+## create data frame for interpolated item types
+Inter_Data_df <- Inter_Data %>% 
+  filter(ItemType %in% c("AB_AD_Test_FB", "AB_AD_Test")) %>%
+  select(Subject, AgeGroup, Cue, ItemType, L1_Inter_Test_Acc)
+Inter_Data_df
+```
+
+
+# Set Factors
+```{r set factors}
+Inter_Data_df %<>%
+  mutate_at(c("Subject", "AgeGroup", "Cue", "ItemType"), factor)
+```
+
+
+# Fit Mixed Effects Model to Interpolated recall and Extract Estimated Probabilities
+```{r fit mixed effects model to interpolated recall and extract estimated probabilities}
+## fit model to interpolated test recall
+Inter_Recall_glmer <- glmer(L1_Inter_Test_Acc ~ AgeGroup * ItemType + 
+                              (1 | Subject) + (1 | Cue), 
+                            family = binomial, 
+                            data = Inter_Data_df)
+
+## anova for interpolated test recall
+Anova(Inter_Recall_glmer)
+
+## pairwise comparisons
+Inter_Recall_glmer_emmeans <- emmeans(Inter_Recall_glmer, pairwise ~ ItemType | AgeGroup, type = "response")
+Inter_Recall_glmer_emmeans
+
+## extract estimated probabilities
+Inter_Recall_glmer_emmeans_df <- as_tibble(Inter_Recall_glmer_emmeans$emmeans)
+Inter_Recall_glmer_emmeans_df
+```
+
+
+# Save the data frame
+```{r save the data frame}
+save(file="1911_Interpolated_Data.RData", Inter_Data_df)
+```
+
+
+
+# Calculating actual probabilities for interpolated accuracy
+```{r Calculating actual probabilities for interpolated accuracy}
+Inter_recall_df <- Inter_Data_df %>%
+  group_by(AgeGroup, ItemType) %>%
+  do(data.frame(rbind(smean.cl.boot(.$L1_Inter_Test_Acc, conf.int=.95, B=1000)))) %>%
+  mutate_if(is.numeric, round, digits = 2)
+Inter_recall_df
+```
+
+
+# Bar graph to show model estimated probabilities for List 1 recall in the interpolated phase
+```{r Bar graph to show model estimated probabilities for List 1 recall in the interpolated phase, fig.height=4, fig.width=4}
+
+# rearrange factor levels
+Inter_Recall_glmer_emmeans_df$ItemType <- factor(Inter_Recall_glmer_emmeans_df$ItemType, levels = c("AB_AD_Test", "AB_AD_Test_FB"))
+Inter_Recall_glmer_emmeans_df$AgeGroup <- factor(Inter_Recall_glmer_emmeans_df$AgeGroup, levels = c("Younger", "Older"))
+
+# bar plot
+Inter_Recall_plot <- ggplot(Inter_Recall_glmer_emmeans_df, aes(x = ItemType, y = prob, group = AgeGroup)) +
+  geom_bar(aes(fill = AgeGroup), color = "black", stat = "identity", position = "dodge", size = .5, width = .45) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), color = "black", position = position_dodge(width = .45), width = 0.1, 
+                size = .5,show.legend = FALSE) +
+  scale_x_discrete(labels=c("AB_AD_Test" = "Test", "AB_AD_Test_FB" = "Test FB")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1), breaks = seq(0, 1, .1)) +
+  scale_fill_manual("AgeGroup", values = c("Younger" = "Grey", "Older" = "white"), labels = c("Younger", "Older")) +
+  xlab("Item Type") +
+  ylab("Interpolated Recall") +
+  ggtitle("Interpolated List 1 Recall") +
+  theme(legend.position = c(0.02, -0.10),
+    legend.direction ="horizontal",
+    legend.key.size = unit(.4, "cm"),
+    legend.key=element_rect(color = "black", size = .2),
+    legend.title=element_blank(),
+    legend.text=element_text(size = 6),
+    strip.background=element_blank(),
+    strip.text.y=element_blank(),
+    axis.ticks.x=element_blank(),  
+    axis.ticks.y=element_line(size=.3,color="black"),
+    axis.text.x=element_text(size=8,color="black"),
+    axis.text.y=element_text(size=8,color="black"),    
+    axis.title.y=element_text(size=10, margin = margin(0, 8, 0, 0)),
+    plot.title = element_text(size = 10, color = "black", hjust = .5), 
+    panel.background = element_blank(),
+    panel.border = element_rect(size = .5, fill = NA, color = "black"))  
+Inter_Recall_plot
+
+ggsave("Inter_Recall_plot.png", plot = Inter_Recall_plot, width = 4, height = 4, units = "in", dpi = 320)
+
+```

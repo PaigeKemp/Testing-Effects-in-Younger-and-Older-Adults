@@ -1,0 +1,774 @@
+---
+title: "1911_Test_Data"
+author: "Paige Kemp & Chris Wahlheim"
+Date: 12/19/2020
+output:
+  html_document:
+   toc: true
+   toc_float: true
+  pdf_document: default
+   
+---
+
+# Clear Environment and Load Packages
+```{r clear Environment and load packages}
+## clear environment
+rm(list=ls())
+
+## load packages
+library(tidyverse)
+library(magrittr)
+library(lme4)
+library(car)
+library(emmeans)
+library(see)
+library(dplyr)
+
+## turn off scientific notation
+options(scipen = 999)
+```
+
+
+# Load/Read data
+```{r load/read data}
+## load interpolated data
+load("1911_Interpolated_Data.Rdata")
+
+## read test data
+Test_Data <- read.csv("1911_Test_data.csv", stringsAsFactors = FALSE, fileEncoding="UTF-8-BOM")
+
+## exclude subjects
+Test_Data <- Test_Data %>% filter(!Subject %in% c("111", "112"))
+
+## replace m response with 0
+Test_Data$CR.RESP <- ifelse(Test_Data$CR.RESP == "m", 0 , 
+                     ifelse(Test_Data$CR.RESP == 1, 1, Test_Data$CR.RESP))
+```
+
+
+# Checking Sample Size
+```{r checking sample size}
+## compute sample size for final test data
+Test_Sample_Size <- Test_Data %>%
+  group_by(AgeGroup) %>%
+  mutate(N = n_distinct(Subject)) %>%
+  summarise(N = mean(N))
+Test_Sample_Size
+```
+
+
+# Create Binary Variables for List Accuracies, Change Classifications, and Create a Data Frame
+```{r create binary variables for list accuracies, change classifications, and create a data frame}
+## create a binary variables for test responses
+## list 2 accuracy
+## Target should match test response
+Test_Data$L2_Test_Acc <- ifelse(Test_Data$Target == Test_Data$TestItem.RESP, 1, 0)
+
+## list 1 accuracy
+## Alternate should match other response
+Test_Data$L1_Test_Acc <- ifelse(Test_Data$Alternate == Test_Data$OtherResp.RESP, 1, 0)
+
+## list 1 intrusions on list 2 test
+## Alternate should match test response
+Test_Data$L1_Intrusion <- ifelse(Test_Data$Alternate == Test_Data$TestItem.RESP, 1, 0)
+
+## create variable for change classification response
+Test_Data$Change_Class <- ifelse(Test_Data$CR.RESP == 1 & Test_Data$L1_Test_Acc == 1, "Change Recollected",
+                          ifelse(Test_Data$CR.RESP == 1 & Test_Data$L1_Test_Acc == 0, "Change Remembered (Not Recollected)",
+                          ifelse(Test_Data$CR.RESP == 0, "Change Not Remembered", "")))
+
+## create binary variables for change classification responses
+Test_Data$ChangeRecollected <- ifelse(Test_Data$Change_Class == "Change Recollected", 1, 0)
+
+## Test_Data$ChangeRemembered <- ifelse(Test_Data$Change_Class == "Change Remembered (Not Recollected)", 1, 0)
+## Test_Data$ChangeNotRemembered <- ifelse(Test_Data$Change_Class == "Change Not Remembered", 1, 0)
+
+Test_Data$ChangeRecollected_Fig <- ifelse(Test_Data$Change_Class == "Change Recollected", "Recollected", "Not Recollected")
+
+## dropping subtrial from data frame
+Test_Data_df <- Test_Data %>% 
+  select(-SubTrial)
+Test_Data_df
+
+## set factors
+Test_Data_df %<>%
+  mutate_at(c("Subject", "AgeGroup", "Cue", "ItemType", "ChangeRecollected_Fig", "Change_Class"), factor)
+Test_Data_df
+```
+
+
+# Set Global Variables
+```{r set global variables}
+## set global variables
+more_control <- glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e4))
+```
+
+
+# Joining/Creating data frames
+```{r joining/creating data frames}
+## join interpolated and test data frames
+Data_All <- Inter_Data_df %>% full_join(Test_Data_df, by = c("Subject", "AgeGroup", "Cue", "ItemType"))
+
+## create data frame with the repeated items dropped
+Data_No_Repeated_df <-Data_All %>% filter(!ItemType == "AB_AB") %>% droplevels
+
+## create data frame with only the changed items
+Data_Only_Changed_df <- Data_All %>% filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>% droplevels
+
+## set factors
+Data_All %<>% mutate_at(("ItemType"), factor)
+Data_No_Repeated_df %<>% mutate_at(("ItemType"), factor)
+Data_Only_Changed_df %<>% mutate_at(("ItemType"), factor)
+```
+
+
+# Forward Difference Coding For List 2 Recall
+```{r forward difference coding for list 2 recall}
+## re-ordering factor levels for forward difference contrasts
+Data_No_Repeated_df$ItemType <- factor(Data_No_Repeated_df$ItemType, levels = c("AB_CD", "AB_AD", "AB_AD_Test", "AB_AD_Test_FB"))
+Data_No_Repeated_df$AgeGroup <- factor(Data_No_Repeated_df$AgeGroup, levels = c("Younger", "Older"))
+
+## forward difference for factor variable with 2 Age levels
+## using "contr.sum" to add to make levels sum to 0
+contrasts(Data_No_Repeated_df$AgeGroup)<-"contr.sum"
+contrasts(Data_No_Repeated_df$AgeGroup) 
+
+## forward difference for factor variable with 4 Item Type levels
+## making control items the reference
+Data_No_Repeated_df$ItemType <- relevel(Data_No_Repeated_df$ItemType, ref="AB_CD")
+
+## stating the contrasts
+contrasts(Data_No_Repeated_df$ItemType)[,1] <- c(3/4,-1/4,-1/4,-1/4)
+contrasts(Data_No_Repeated_df$ItemType)[,2] <- c(1/2,1/2,-1/2,-1/2)
+contrasts(Data_No_Repeated_df$ItemType)[,3] <- c(1/4,1/4,1/4,-3/4)
+
+## renaming the columns to clarify the contrasts
+colnames(contrasts(Data_No_Repeated_df$ItemType)) <- c("AB_CD_vs_AB_AD", 
+                                                    "AB_AD_vs_AB_AD_Test", 
+                                                    "AB_AD_Test_vs_AB_AD_Test_FB")
+
+## look at the final contrast matrix
+contrasts(Data_No_Repeated_df$ItemType)
+```
+
+
+# Final Cued Recall Test: List 2 Recall and List 1 Intrusions 
+# Fit Mixed Effects Model to List 2 Recall and Extract Estimated Probabilities
+```{r fit mixed effects model to list 2 recall and extract estimated probabilities}
+## fit model to list 2 recall
+L2_Recall_glmer <- glmer(L2_Test_Acc ~ AgeGroup * ItemType + 
+                           (1 | Subject) + (1 | Cue), 
+                         family = binomial, 
+                         data = Data_No_Repeated_df)
+
+## summary for List 2 recall
+summary(L2_Recall_glmer)
+
+## anova for List 2 recall
+Anova(L2_Recall_glmer)
+
+## pairwise comparisons
+L2_Recall_glmer_emmeans <- emmeans(L2_Recall_glmer, 
+                                   list(pairwise ~ AgeGroup,
+                                        pairwise ~ ItemType,
+                                        pairwise ~ ItemType | AgeGroup), type = "response")
+L2_Recall_glmer_emmeans
+
+## extract estimated probabilities
+L2_Recall_glmer_emmeans_df <- as_tibble(L2_Recall_glmer_emmeans$`emmeans of ItemType | AgeGroup`)
+L2_Recall_glmer_emmeans_df
+```
+
+
+# Create Data Frames For List 2 Visualization
+```{r create data Frames for list 2 visualization}
+## data frame for individual subjects data
+Data_No_Repeated_Sub_df <- Data_No_Repeated_df %>% 
+  group_by(AgeGroup, Subject, ItemType) %>% 
+  summarise(List2Recall = mean(L2_Test_Acc), 
+            List1Intrusion = mean(L1_Intrusion))
+
+## lowered and raised data points for later visualization
+Data_No_Repeated_Sub_df$List2Recall <- ifelse(Data_No_Repeated_Sub_df$List2Recall == 1, .99,
+                                       ifelse(Data_No_Repeated_Sub_df$List2Recall == 0, .01,
+                                              Data_No_Repeated_Sub_df$List2Recall))
+
+Data_No_Repeated_Sub_df$List1Intrusion <- ifelse(Data_No_Repeated_Sub_df$List1Intrusion == 1, .99,
+                                          ifelse(Data_No_Repeated_Sub_df$List1Intrusion == 0, .01,
+                                                 Data_No_Repeated_Sub_df$List1Intrusion))
+                                              
+## reorder factor levels
+Data_No_Repeated_Sub_df$ItemType <- factor(Data_No_Repeated_Sub_df$ItemType, levels = c("AB_CD", "AB_AD", "AB_AD_Test", "AB_AD_Test_FB"))
+Data_No_Repeated_Sub_df$AgeGroup <- factor(Data_No_Repeated_Sub_df$AgeGroup, levels = c("Younger", "Older"))
+
+## set x axis position for point plots
+Data_No_Repeated_Sub_df$x_pos_pnt <- ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_CD", .95,
+                                     ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD", 1.95, 
+                                     ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD_Test", 2.95,        
+                                     ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD_Test_FB", 3.95, "")))) %>% as.numeric()
+
+## set x axis position for violin plots
+Data_No_Repeated_Sub_df$x_pos_vio <- ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_CD", 1.05,
+                                     ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD", 2.05, 
+                                     ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD_Test", 3.05,        
+                                     ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD_Test_FB", 4.05, "")))) %>% as.numeric()
+
+## set x axis position for x position mean plots
+Data_No_Repeated_Sub_df$x_pos_mean <- ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_CD", 1.04,
+                                      ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD", 2.04, 
+                                      ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD_Test", 3.04,        
+                                      ifelse(Data_No_Repeated_Sub_df$ItemType == "AB_AD_Test_FB", 4.04, "")))) %>% as.numeric()
+
+## set x axis position for x position mean plots
+L2_Recall_glmer_emmeans_df$x_pos_mean <- ifelse(L2_Recall_glmer_emmeans_df$ItemType == "AB_CD", 1.1,
+                                         ifelse(L2_Recall_glmer_emmeans_df$ItemType == "AB_AD", 2.1, 
+                                         ifelse(L2_Recall_glmer_emmeans_df$ItemType == "AB_AD_Test", 3.1,        
+                                         ifelse(L2_Recall_glmer_emmeans_df$ItemType == "AB_AD_Test_FB", 4.1, "")))) %>% as.numeric()
+
+```
+
+
+# Plot Individual Subject Data For Overall Correct Recall
+```{r plot individual subject data for overall correct recall, fig.height=4, fig.width=8}
+correct_sub_p <- ggplot(Data_No_Repeated_Sub_df, aes(x = ItemType, y = List2Recall, fill = ItemType)) +
+  geom_violinhalf(aes(x = x_pos_pnt), scale = "count") +
+  geom_dotplot(aes(fill = ItemType, x = x_pos_pnt), method = "dotdensity", binaxis = "y", stackdir = "down", dotsize = .5, stackratio = .8) +
+  stat_summary(aes(x = x_pos_mean), geom = "errorbar", fun.data = "mean_cl_boot", width = 0, size = 1) +
+  stat_summary(aes(x = x_pos_mean), geom = "point", fun.y = "mean", shape = 21, size = 3, fill = "black") +
+  geom_segment(data = L2_Recall_glmer_emmeans_df, 
+               aes(x = x_pos_mean, xend = x_pos_mean, y = asymp.LCL, yend = asymp.UCL),  color = "black", size = 1) + 
+  geom_point(data = L2_Recall_glmer_emmeans_df, 
+             aes(x = x_pos_mean, y = prob), shape = 23, size = 3,  color = "black", fill = "white") +
+  facet_grid(. ~ AgeGroup) +
+  scale_fill_manual (values = c("gray100","gray80", "gray60", "gray40")) +
+  scale_x_continuous(breaks=seq(1, 4, 1), limits = c(0.5, 4.5), labels = c("A-B, C-D", "A-B, A-D", "A-B, A-D\nTested", "A-B, A-D\nTested\nFeedback")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-0.05, 1.1), breaks = seq(0, 1, .1)) +
+  labs(x = "Item Type", y = "List 2 Recall") +
+  theme(legend.position = "none",
+        legend.key.size = unit(.65, "cm"),
+        legend.key=element_rect(color = "black", size = .1),     
+        legend.title=element_blank(),
+        legend.text=element_blank(),
+        strip.background=element_blank(),
+        strip.text.x=element_text(size = 16, color = "black", margin = margin(0, 0, 8, 0)),
+        strip.text.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=12,color="black"),
+        axis.text.y=element_text(size=11,color="black"),
+        axis.title.x=element_text(size=16, margin = margin(8, 0, 0, 0), hjust = .5),
+        axis.title.y=element_text(size=16, margin = margin(0, 8, 0, 0)),
+        plot.margin = unit(c(.15, .15, .15, .15), "in"),
+        plot.title = element_text(size = 18, color = "black", hjust = 0, vjust = 3), 
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(-0.01, "cm"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+correct_sub_p
+
+ggsave("correct_sub_p.png", plot = correct_sub_p, width = 8, height = 4, units = "in", dpi = 320)
+
+```
+
+
+# Fit Mixed Effects Model to List 1 Intrusions and Extract Estimated Probabilities
+```{r fit mixed effects model to list 1 intrusions and extract estimated probabilities}
+## fit model to list 1 intrusions
+L1_Intru_glmer <- glmer(L1_Intrusion ~ AgeGroup * ItemType + 
+                          (1 | Subject) + (1 | Cue),  
+                        family = binomial, 
+                        data = Data_No_Repeated_df)
+
+## summary for list 1 intrusions
+summary(L1_Intru_glmer)
+
+## anova for list 1 intrusions
+Anova(L1_Intru_glmer)
+
+## pairwise comparisons
+L1_Intru_glmer_emmeans <- emmeans(L1_Intru_glmer, 
+                                   list(pairwise ~ AgeGroup,
+                                        pairwise ~ ItemType,
+                                        pairwise ~ ItemType | AgeGroup), type = "response")
+L1_Intru_glmer_emmeans
+
+## extract estimated probabilities
+L1_Intru_glmer_emmeans_df <- as_tibble(L1_Intru_glmer_emmeans$`emmeans of ItemType | AgeGroup`)
+L1_Intru_glmer_emmeans_df
+
+## drop control items for visualization
+L1_Intru_glmer_emmeans_df %<>% filter(ItemType != "AB_CD") 
+L1_Intru_glmer_emmeans_df
+```
+
+
+# Alterations For List 1 Intrusions Visualization
+```{r alterations for list 1 intrusions visualization}
+## data frame for only changed item types 
+Data_AB_AD_Only_Sub_df <- Data_No_Repeated_Sub_df %>%filter(ItemType != "AB_CD")
+Data_AB_AD_Only_Sub_df
+
+## set x axis position for x position mean plots
+L1_Intru_glmer_emmeans_df$x_pos_mean <- ifelse(L1_Intru_glmer_emmeans_df$ItemType == "AB_AD", 1.1, 
+                                        ifelse(L1_Intru_glmer_emmeans_df$ItemType == "AB_AD_Test", 2.1,        
+                                        ifelse(L1_Intru_glmer_emmeans_df$ItemType == "AB_AD_Test_FB", 3.1, ""))) %>% as.numeric()
+
+## set x axis position for point plots
+Data_AB_AD_Only_Sub_df$x_pos_pnt <- ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD", .95,
+                                    ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD_Test", 1.95, 
+                                    ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD_Test_FB", 2.95, ""))) %>% as.numeric()
+
+## set x axis position for violin plots
+Data_AB_AD_Only_Sub_df$x_pos_vio <- ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD", 1.05,
+                                    ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD_Test", 2.05, 
+                                    ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD_Test_FB", 3.05, ""))) %>% as.numeric()
+
+## set x axis position for x position mean plots
+Data_AB_AD_Only_Sub_df$x_pos_mean <- ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD", 1.04,
+                                     ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD_Test", 2.04, 
+                                     ifelse(Data_AB_AD_Only_Sub_df$ItemType == "AB_AD_Test_FB", 3.04, ""))) %>% as.numeric()
+```
+
+
+# Plot Individual Subject Data For Overall List 1 Intrusions 
+```{r plot individual subject data for overall list 1 intrusions, fig.height=4, fig.width=8}
+intrusions_sub_p <- ggplot(Data_AB_AD_Only_Sub_df, aes(x = ItemType, y = List1Intrusion, fill = ItemType)) +
+  geom_violinhalf(aes(x = x_pos_pnt), scale = "count") +
+  geom_dotplot(aes(fill = ItemType, x = x_pos_pnt), method = "dotdensity", binaxis = "y", stackdir = "down", dotsize = .5, stackratio = .8) +
+  stat_summary(aes(x = x_pos_mean), geom = "errorbar", fun.data = "mean_cl_boot", width = 0, size = 1) +
+  stat_summary(aes(x = x_pos_mean), geom = "point", fun.y = "mean", shape = 21, size = 3, fill = "black") +
+  geom_segment(data = L1_Intru_glmer_emmeans_df, 
+               aes(x = x_pos_mean, xend = x_pos_mean, y = asymp.LCL, yend = asymp.UCL),  color = "black", size = 1) + 
+  geom_point(data = L1_Intru_glmer_emmeans_df, 
+             aes(x = x_pos_mean, y = prob), shape = 23, size = 3,  color = "black", fill = "white") +
+  facet_grid(. ~ AgeGroup) +
+  scale_fill_manual (values = c("gray80", "gray60", "gray40")) +
+  scale_x_continuous(breaks=seq(1, 3, 1), limits = c(0.5, 3.5), labels = c("A-B, A-D", "A-B, A-D\nTested", "A-B, A-D\nTested\nFeedback")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-0.05, 1), breaks = seq(0, 1, .1)) +
+  labs(x = "Item Type", y = "List 1 Intrusions") +
+  theme(legend.position = "none",
+        legend.key.size = unit(.65, "cm"),
+        legend.key=element_rect(color = "black", size = .1),     
+        legend.title=element_blank(),
+        legend.text=element_blank(),
+        strip.background=element_blank(),
+        strip.text.x=element_text(size = 16, color = "black", margin = margin(0, 0, 8, 0)),
+        strip.text.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=12,color="black"),
+        axis.text.y=element_text(size=11,color="black"),
+        axis.title.x=element_text(size=16, margin = margin(8, 0, 0, 0), hjust = .5),
+        axis.title.y=element_text(size=16, margin = margin(0, 8, 0, 0)),
+        plot.margin = unit(c(.15, .15, .15, .15), "in"),
+        plot.title = element_text(size = 18, color = "black", hjust = 0, vjust = 3), 
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(-0.01, "cm"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+intrusions_sub_p
+
+ggsave("intrusions_sub_p.png", plot = intrusions_sub_p, width = 8, height = 4, units = "in", dpi = 320)
+```
+
+
+# Change Classifications Probabilities on the Final Cued Recall Test
+```{r change classifications probabilities on the final cued recall test}
+## summarize change classification responses
+Change_Class_prop <- Test_Data_df %>% 
+  group_by(AgeGroup, ItemType) %>%
+  filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>% 
+  count(Change_Class) %>% 
+  mutate(prop = n / sum(n)) %>%
+  select(-n) %>%
+  pivot_wider(names_from = Change_Class, values_from = prop) %>%
+  select(AgeGroup, ItemType, "Change Recollected", "Change Remembered (Not Recollected)", "Change Not Remembered") %>%
+  arrange(desc(AgeGroup)) 
+  
+
+Change_Class_prop$Total <- rowSums(Change_Class_prop[, 3:5])
+Change_Class_prop
+
+```
+
+
+# Forward Difference Coding
+```{r forward fifference coding}
+## re-ordering factor levels for forward difference contrasts
+Data_Only_Changed_df$ItemType <- factor(Data_Only_Changed_df$ItemType, levels = c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB"))
+Data_Only_Changed_df$AgeGroup <- factor(Data_Only_Changed_df$AgeGroup, levels = c("Younger", "Older"))
+
+## forward difference for factor variable with 2 Age levels
+## using "contr.sum" to add to make levels sum to 0
+## renaming the columns to clarify the contrasts
+contrasts(Data_Only_Changed_df$AgeGroup) <-"contr.sum"
+colnames(contrasts(Data_Only_Changed_df$AgeGroup)) <- "Younger_vs_Older"
+contrasts(Data_Only_Changed_df$AgeGroup)
+
+## forward difference for factor variable with 4 Item Type levels
+## making control items the reference
+Data_Only_Changed_df$ItemType <- relevel(Data_Only_Changed_df$ItemType, ref="AB_AD")
+
+## stating the contrasts
+contrasts(Data_Only_Changed_df$ItemType)[,1] <- c(2/3,-1/3,-1/3)
+contrasts(Data_Only_Changed_df$ItemType)[,2] <- c(1/3,1/3,-2/3)
+
+## renaming the columns to clarify the contrasts
+colnames(contrasts(Data_Only_Changed_df$ItemType)) <- c("AB_AD_vs_AB_AD_Test", 
+                                                    "AB_AD_Test_vs_AB_AD_Test_FB")
+```
+
+
+# Fit Mixed Effects Model to Change Recollection and Extract Estimated Probabilities
+```{r fit Mixed Effects Model to Change Recollection and Extract Estimated Probabilities}
+## fit model to change recollection
+Change_Recollection_glmer <- glmer(ChangeRecollected ~ AgeGroup * ItemType + 
+                                     (1 | Subject) + (1 | Cue), 
+                                   family = binomial,
+                                   data = Data_Only_Changed_df)
+
+## anova to change recollection
+Anova(Change_Recollection_glmer)
+
+## summary to change recollection
+summary(Change_Recollection_glmer)
+
+## pairwise comparisons
+Change_Recollection_glmer_emmeans <- emmeans(Change_Recollection_glmer, 
+                                            list(pairwise ~ ItemType,
+                                                 pairwise ~ AgeGroup,
+                                                 pairwise ~ ItemType | AgeGroup), type = "response")
+Change_Recollection_glmer_emmeans
+
+## extract estimated probabilities
+Change_Recollection_glmer_emmeans_df <- as_tibble(Change_Recollection_glmer_emmeans$`emmeans of ItemType | AgeGroup`)
+Change_Recollection_glmer_emmeans_df
+```
+
+
+# Forward Difference Coding For Recall Conditionalized on Change Classifications
+```{r forward difference coding for recall conditionalized on change classifications}
+# making Recollected the reference
+Data_Only_Changed_df$ChangeRecollected_Fig <- relevel(Data_Only_Changed_df$ChangeRecollected_Fig, ref="Recollected")
+
+# using "contr.sum" to add to make levels sum to 0
+contrasts(Data_Only_Changed_df$ChangeRecollected_Fig)<-"contr.sum"
+colnames(contrasts(Data_Only_Changed_df$ChangeRecollected_Fig)) <- "Recollected_vs_NotRecollected"
+contrasts(Data_Only_Changed_df$ChangeRecollected_Fig)
+```
+
+
+# Fit Mixed Effects Model to List 2 Recall Conditionalized on Change Classifications
+```{r fit mixed effects model to list 2 recall conditionalized on change classifications}
+## fit model to list 2 recall accuracy conditionalized on change classification
+L2_Recall_Cond_glmer <- glmer(L2_Test_Acc ~ AgeGroup * ItemType * ChangeRecollected_Fig +
+                              (1 | Subject) + (1 | Cue), 
+                              family = binomial, 
+                              control = more_control, 
+                              data = Data_Only_Changed_df)
+
+## Anova for List 2 recall accuracy conditionalized on change classification
+Anova(L2_Recall_Cond_glmer)
+
+## Summary for List 2 recall accuracy conditionalized on change classification
+summary(L2_Recall_Cond_glmer)
+
+## pairwise comparisons
+L2_Recall_Cond_glmer_emmeans <- emmeans(L2_Recall_Cond_glmer, 
+                                        list(pairwise ~ AgeGroup | ChangeRecollected_Fig,
+                                             pairwise ~ ItemType | AgeGroup | ChangeRecollected_Fig), type = "response")
+L2_Recall_Cond_glmer_emmeans
+
+## extract estimated probabilities
+L2_Recall_Cond_glmer_emmeans_df <- as_tibble(L2_Recall_Cond_glmer_emmeans$emmeans)
+L2_Recall_Cond_glmer_emmeans_df
+```
+
+
+# Combine Data Frames for Change Class
+```{r combine data frames for change class}
+## summarize change classification responses
+Change_Recollected_prop <- Data_Only_Changed_df %>% 
+  group_by(AgeGroup, ItemType) %>%
+  filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>% 
+  count(ChangeRecollected_Fig) %>% 
+  mutate(prop = n / sum(n)) %>%
+  select(-n) %>%
+  pivot_wider(names_from = ChangeRecollected_Fig, values_from = prop) %>% 
+  select(AgeGroup, ItemType, "Recollected", "Not Recollected") %>%
+  arrange(desc(AgeGroup))
+Change_Recollected_prop$Total <- rowSums(Change_Recollected_prop[, 3:4])
+Change_Recollected_prop
+
+## convert data frame to long format
+Change_Recollected_prop_l <- Change_Recollected_prop %>% 
+  select(-Total) %>%
+  pivot_longer(cols = c("Recollected", "Not Recollected"), 
+                 names_to = "ChangeRecollected_Fig", values_to = "changeprob")
+Change_Recollected_prop_l
+
+## data frame for conditionalized means
+List2_Recall_Cond_obs_Mean <- Data_Only_Changed_df %>% 
+  group_by(AgeGroup, ItemType, ChangeRecollected_Fig) %>%
+  filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>% 
+  summarise(L2_Recall = mean(L2_Test_Acc))
+List2_Recall_Cond_obs_Mean
+  
+# join change recollection and list 2 recollection data frames
+List2_Recall_Cond <- L2_Recall_Cond_glmer_emmeans_df %>% 
+  left_join(Change_Recollected_prop_l) %>% 
+  left_join(List2_Recall_Cond_obs_Mean)
+List2_Recall_Cond
+
+## data frame for subjects
+List2_Recall_Cond_sub <- Data_Only_Changed_df %>% 
+  group_by(Subject, AgeGroup, ItemType, ChangeRecollected_Fig) %>%
+  filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>% 
+  summarise(L2_Recall = mean(L2_Test_Acc)) %>% 
+  left_join(Change_Recollected_prop_l)
+List2_Recall_Cond_sub
+```
+
+
+# Alterations For List 2 Recall Conditionalized
+```{r alterations for list 2 recall conditionalized}
+## re-order factor levels
+List2_Recall_Cond$ChangeRecollected_Fig <- factor(List2_Recall_Cond$ChangeRecollected_Fig, levels = c("Recollected", "Not Recollected"))
+List2_Recall_Cond_sub$ChangeRecollected_Fig <- factor(List2_Recall_Cond_sub$ChangeRecollected_Fig, levels = c("Recollected", "Not Recollected"))
+
+## set x axis position for x position mean plots
+List2_Recall_Cond$x_pos_mean <- ifelse(List2_Recall_Cond$ItemType == "AB_AD", 1.1, 
+                                ifelse(List2_Recall_Cond$ItemType == "AB_AD_Test", 2.1,        
+                                ifelse(List2_Recall_Cond$ItemType == "AB_AD_Test_FB", 3.1, ""))) %>% as.numeric()
+
+## set x axis position for point plots
+List2_Recall_Cond_sub$x_pos_pnt <- ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD", .95,
+                                   ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD_Test", 1.95, 
+                                   ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD_Test_FB", 2.95, ""))) %>% as.numeric()
+
+## set x axis position for violin plots
+List2_Recall_Cond_sub$x_pos_vio <- ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD", 1.05,
+                                   ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD_Test", 2.05, 
+                                   ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD_Test_FB", 3.05, ""))) %>% as.numeric()
+
+## set x axis position for x position mean plots
+List2_Recall_Cond_sub$x_pos_mean <- ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD", 1.03,
+                                    ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD_Test", 2.03, 
+                                    ifelse(List2_Recall_Cond_sub$ItemType == "AB_AD_Test_FB", 3.03, ""))) %>% as.numeric()
+```
+
+
+# Plot Individual Subject Data For List 2 Recall Conditionalized
+```{r plot individual subject data for list 2 recall conditionalized, fig.height=6, fig.width=14}
+list2_recall_con_sub_p <- ggplot(List2_Recall_Cond_sub, aes(x = ItemType, y = L2_Recall, fill = interaction(ItemType, ChangeRecollected_Fig))) +
+  geom_violinhalf(aes(x = x_pos_pnt, fill = ItemType), scale = "count") +
+  geom_dotplot(aes(fill = ItemType, x = x_pos_pnt), method = "dotdensity", binaxis = "y", stackdir = "down", dotsize = .5, stackratio = .8) +
+  stat_summary(aes(x = x_pos_mean), geom = "errorbar", color = "black", fun.data = "mean_cl_boot", width = 0, size = 1) +
+  stat_summary(aes(x = x_pos_mean, size = changeprob), geom = "point", fun = "mean", shape = 21, color = "black") +
+  geom_segment(data = List2_Recall_Cond, 
+               aes(x = x_pos_mean, xend = x_pos_mean, y = asymp.LCL, yend = asymp.UCL), color = "black", size = 1) + 
+  geom_point(data = List2_Recall_Cond, 
+             aes(x = x_pos_mean, y = prob, size = changeprob), shape = 23, color = "black", fill = "white") +
+  facet_grid(ChangeRecollected_Fig ~ AgeGroup) +
+  scale_fill_manual(values = c("gray85", "gray60", "gray45", "firebrick2", "forestgreen", "firebrick2", "forestgreen", "firebrick2", "forestgreen")) +
+  scale_size_continuous(range = c(4.5, 8)) +
+  scale_x_continuous(breaks=seq(1, 3, 1), limits = c(0.5, 3.5), labels = c("A-B, A-D", "A-B, A-D\nTested", "A-B, A-D\nTested\nFeedback")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-0.05, 1.05), breaks = seq(0, 1, .1)) +
+  labs(x = "Item Type", y = "List 2 Recall Conditionalized") +
+  theme(legend.position = "none",
+        legend.key.size = unit(.65, "cm"),
+        legend.key=element_rect(color = "black", size = .1),     
+        legend.title=element_blank(),
+        legend.text=element_text(size = 12),
+        strip.background=element_blank(),
+        strip.text.x=element_text(size = 18, color = "black", margin = margin(0, 0, 8, 0)),
+        strip.text.y=element_text(size = 18, color = "black", margin = margin(0, 0, 0, 8)),
+        axis.ticks.x=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=14,color="black"),
+        axis.text.y=element_text(size=13,color="black"),
+        axis.title.x=element_text(size=18, margin = margin(8, 0, 0, 0), hjust = .5),
+        axis.title.y=element_text(size=18, margin = margin(0, 8, 0, 0)),
+        plot.margin = unit(c(.15, .15, .15, .15), "in"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(-0.01, "cm"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+list2_recall_con_sub_p
+```
+
+
+# Fit Mixed Effects Model to List 1 Intrusions Conditionalized and Extract Estimated Probabilities
+```{r fit mixed effects model to list 1 intrusions conditionalized and extract estimated probabilities}
+# fit model to list 1 intrusions
+L1_Intru_Cond_glmer <- glmer(L1_Intrusion ~ AgeGroup * ItemType * ChangeRecollected_Fig 
+                             + (1 | Subject) + (1 | Cue), 
+                             family = binomial, 
+                             control = more_control, 
+                             data = Data_Only_Changed_df)
+
+# Anova for list 1 intrusions
+Anova(L1_Intru_Cond_glmer)
+
+# Summary for list 1 intrusions
+summary(L1_Intru_Cond_glmer)
+
+## pairwise comparisons
+L1_Intru_Cond_glmer_emmeans <- emmeans(L1_Intru_Cond_glmer, 
+                                pairwise ~ ItemType | AgeGroup | ChangeRecollected_Fig, type = "response")
+L1_Intru_Cond_glmer_emmeans
+
+## extract estimated probabilities
+L1_Intru_Cond_glmer_emmeans_df <- as_tibble(L1_Intru_Cond_glmer_emmeans$emmeans)
+L1_Intru_Cond_glmer_emmeans_df %<>% select(-df) %>% mutate_if(is.numeric, round, digits = 3)
+L1_Intru_Cond_glmer_emmeans_df
+```
+
+
+# Fit Mixed Effects Model to List 1 Intrusions Conditionalized on Change Not Recollected and Extract Estimated Probabilities
+```{r fit mixed effects model to list 1 intrusions conditionalized on change not recollected and extract estimated probabilities}
+## fit model to list 1 intrusions
+L1_Intru_Cond_NoCR_glmer <- glmer(L1_Intrusion ~ AgeGroup * ItemType * Change_Class +
+                             (1 | Subject) + (1 | Cue), 
+                             family = binomial, 
+                             control = more_control, 
+                             data = Data_Only_Changed_df, subset = Change_Class != "Change Recollected")
+
+# Anova for list 1 intrusions
+Anova(L1_Intru_Cond_NoCR_glmer)
+
+## pairwise comparisons
+L1_Intru_Cond_NoCR_glmer_emmeans <- emmeans(L1_Intru_Cond_NoCR_glmer, 
+                                pairwise ~ ItemType | AgeGroup | Change_Class, type = "response")
+L1_Intru_Cond_NoCR_glmer_emmeans
+
+## extract estimated probabilities
+L1_Intru_Cond_NoCR_glmer_emmeans_df <- as_tibble(L1_Intru_Cond_NoCR_glmer_emmeans$emmeans)
+L1_Intru_Cond_NoCR_glmer_emmeans_df %<>% select(-df) %>% mutate_if(is.numeric, round, digits = 3)
+L1_Intru_Cond_NoCR_glmer_emmeans_df
+```
+
+
+# Combine data frames
+```{r combine data frames}
+## summarize no change recollection responses
+No_Change_Recollection_prop <- Data_Only_Changed_df %>% 
+  group_by(AgeGroup, ItemType) %>%
+  filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>% 
+  # filter(Change_Class %in% c("Change Not Remembered", "Change Remembered (Not Recollected)")) %>% 
+  count(Change_Class) %>% 
+  mutate(prop = n / sum(n)) %>%
+  select(-n) %>%
+  pivot_wider(names_from = Change_Class, values_from = prop) %>% 
+  select(AgeGroup, ItemType, "Change Not Remembered", "Change Remembered (Not Recollected)") %>%
+  arrange(desc(AgeGroup))
+
+No_Change_Recollection_prop$Total <- rowSums(No_Change_Recollection_prop[, 3:4])
+No_Change_Recollection_prop
+
+## convert data frame to long format
+No_Change_Recollection_prop_l <- No_Change_Recollection_prop %>% 
+  select(-Total) %>%
+  pivot_longer(cols = c("Change Not Remembered", "Change Remembered (Not Recollected)"), 
+                 names_to = "Change_Class", values_to = "classprob")
+No_Change_Recollection_prop_l
+
+## data frame for conditionalized means
+List1_Intru_Cond_obs_Mean <- Data_Only_Changed_df %>% 
+  group_by(AgeGroup, ItemType, Change_Class) %>%
+  filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>%
+  filter(Change_Class %in% c("Change Not Remembered", "Change Remembered (Not Recollected)")) %>% 
+  summarise(L1_Intru = mean(L1_Intrusion))
+List1_Intru_Cond_obs_Mean
+  
+# join change recollection and list 1 intrusions data frames
+List1_Intru_Cond <- L1_Intru_Cond_NoCR_glmer_emmeans_df %>% 
+  left_join(No_Change_Recollection_prop_l) %>% 
+  left_join(List1_Intru_Cond_obs_Mean)
+List1_Intru_Cond
+
+## data frame for subjects
+List1_Intru_Cond_sub <- Data_Only_Changed_df %>% 
+  group_by(Subject, AgeGroup, ItemType, Change_Class) %>%
+  filter(ItemType %in% c("AB_AD", "AB_AD_Test", "AB_AD_Test_FB")) %>%
+  filter(Change_Class %in% c("Change Not Remembered", "Change Remembered (Not Recollected)")) %>% 
+  summarise(L1_Intru = mean(L1_Intrusion)) %>% 
+  left_join(No_Change_Recollection_prop_l)
+List1_Intru_Cond_sub
+```
+
+
+# Alterations For List 1 Intrusions Conditionalized
+```{r alterations for list 1 Intrusions conditionalized}
+## re-order factor levels
+List1_Intru_Cond$Change_Class <- factor(List1_Intru_Cond$Change_Class, 
+                                        levels = c("Change Remembered (Not Recollected)", "Change Not Remembered"))
+List1_Intru_Cond_sub$Change_Class <- factor(List1_Intru_Cond_sub$Change_Class, 
+                                        levels = c("Change Remembered (Not Recollected)", "Change Not Remembered"))
+
+## set x axis position for x position mean plots
+List1_Intru_Cond$x_pos_mean <- ifelse(List1_Intru_Cond$ItemType == "AB_AD", 1.1, 
+                                ifelse(List1_Intru_Cond$ItemType == "AB_AD_Test", 2.1,        
+                                ifelse(List1_Intru_Cond$ItemType == "AB_AD_Test_FB", 3.1, ""))) %>% as.numeric()
+
+## set x axis position for point plots
+List1_Intru_Cond_sub$x_pos_pnt <- ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD", .95,
+                                   ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD_Test", 1.95, 
+                                   ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD_Test_FB", 2.95, ""))) %>% as.numeric()
+
+## set x axis position for violin plots
+List1_Intru_Cond_sub$x_pos_vio <- ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD", 1.05,
+                                   ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD_Test", 2.05, 
+                                   ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD_Test_FB", 3.05, ""))) %>% as.numeric()
+
+## set x axis position for x position mean plots
+List1_Intru_Cond_sub$x_pos_mean <- ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD", 1.03,
+                                    ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD_Test", 2.03, 
+                                    ifelse(List1_Intru_Cond_sub$ItemType == "AB_AD_Test_FB", 3.03, ""))) %>% as.numeric()
+```
+
+
+# Plot Individual Subject Data For List 1 Intrusions Conditionalized
+```{r plot individual subject data for list 1 intrusions conditionalized, fig.height=6, fig.width=14}
+list1_intru_con_sub_p <- ggplot(List1_Intru_Cond_sub, aes(x = ItemType, y = L1_Intru, fill = interaction(ItemType, Change_Class))) +
+  geom_violinhalf(aes(x = x_pos_pnt, fill = ItemType), scale = "count") +
+  geom_dotplot(aes(fill = ItemType, x = x_pos_pnt), method = "dotdensity", binaxis = "y", stackdir = "down", dotsize = .5, stackratio = .8) +
+  stat_summary(aes(x = x_pos_mean), geom = "errorbar", color = "black", fun.data = "mean_cl_boot", width = 0, size = 1) +
+  stat_summary(aes(x = x_pos_mean, size = classprob), geom = "point", fun = "mean", shape = 21, color = "black") +
+  geom_segment(data = List1_Intru_Cond, 
+               aes(x = x_pos_mean, xend = x_pos_mean, y = asymp.LCL, yend = asymp.UCL), color = "black", size = 1) + 
+  geom_point(data = List1_Intru_Cond, 
+             aes(x = x_pos_mean, y = prob, size = classprob), shape = 23, color = "black", fill = "white") +
+  facet_grid(Change_Class ~ AgeGroup) +
+  scale_fill_manual(values = c("gray80", "gray60", "gray40", "firebrick2", "blue2", "firebrick2", "blue2", "firebrick2", "blue2")) +
+  scale_size_continuous(range = c(4.5, 8)) +
+  scale_x_continuous(breaks=seq(1, 3, 1), limits = c(0.5, 3.5), labels = c("A-B, A-D", "A-B, A-D\nTested", "A-B, A-D\nTested\nFeedback")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-0.05, 1.05), breaks = seq(0, 1, .1)) +
+  labs(x = "Item Type", y = "List 1 Intrusions Conditionalized") +
+  theme(legend.position = "none",
+        legend.key.size = unit(.65, "cm"),
+        legend.key=element_rect(color = "black", size = .1),     
+        legend.title=element_blank(),
+        legend.text=element_text(size = 12),
+        strip.background=element_blank(),
+        strip.text.x=element_text(size = 18, color = "black", margin = margin(0, 0, 8, 0)),
+        strip.text.y=element_text(size = 18, color = "black", margin = margin(0, 0, 0, 8)),
+        axis.ticks.x=element_blank(),
+        axis.ticks.y=element_line(size=.3,color="black"),
+        axis.text.x=element_text(size=14,color="black"),
+        axis.text.y=element_text(size=13,color="black"),
+        axis.title.x=element_text(size=18, margin = margin(8, 0, 0, 0), hjust = .5),
+        axis.title.y=element_text(size=18, margin = margin(0, 8, 0, 0)),
+        plot.margin = unit(c(.15, .15, .15, .15), "in"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.spacing = unit(-0.01, "cm"),
+        panel.border = element_rect(size = .5, fill = NA, color = "black"))
+list1_intru_con_sub_p
+```
+
+
